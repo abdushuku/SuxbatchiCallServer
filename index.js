@@ -6,11 +6,11 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import OpenAi from 'openai';
-const openai = new OpenAi({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAi({ apiKey: process.env.OPENAI_API_KEY});
 
 const { VoiceResponse } = twilio.twiml;
 const app = express();
-const port = 3004;
+const port = process.env.PORT || 3004;
 
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
@@ -23,19 +23,18 @@ async function getGPTResponse(userMessage) {
             { role: "system", content: "You are a helpful assistant." },
             { role: "user", content: userMessage }
         ],
-        model: "gpt-4o-mini-2024-07-18"
+        model: "gpt-4"
     });
 
-    console.log(completion.choices[0].message.content);
     return completion.choices[0].message.content;
 }
 
 function ttsConfig(gptText) {
     return {
         method: 'post',
-        url:"https://mohir.ai/api/v1/tts",
+        url: process.env.MOHIRAI_TTS,
         headers: {
-            Authorization: `${process.env.MOHIRAI_API_KEY}`,
+            Authorization: process.env.MOHIRAI_API_KEY,
             'Content-Type': 'application/json'
         },
         data: {
@@ -49,12 +48,9 @@ function ttsConfig(gptText) {
 // Function to get TTS response
 async function ttsResponse(gptText) {
     const config = ttsConfig(gptText);
-    console.log('TTS Request Config:', config);
-
     try {
         const response = await axios(config);
-        console.log('TTS Response:', response.data);
-        return response;
+        return response.data.result.url;
     } catch (error) {
         console.error(`TTS Service Error: ${error.message}`);
         throw error;
@@ -62,21 +58,26 @@ async function ttsResponse(gptText) {
 }
 
 // Handle incoming calls
-app.post('/voice', (req, res) => {
+app.post('/voice', async (req, res) => {
     const twiml = new VoiceResponse();
-    twiml.say('Hello, how can I assist you today?');
+    try {
+        const firstTtsUrl = await ttsResponse('Assalomu alaykum sizga qanday yordam bera olaman?');
 
-    const gather = twiml.gather({
-        input: 'speech',
-        action: '/handle-gather-complete',
-        speechTimeout: 'auto',
-        speechModel: 'phone_call',
-        language: 'uz-UZ'
-    });
+        const gather = twiml.gather({
+            input: 'speech',
+            action: '/handle-gather-complete',
+            speechTimeout: 'auto',
+            speechModel: 'phone_call',
+            language: 'uz-UZ'
+        });
 
-    gather.say('Please say something and I will assist you.');
-    res.type('text/xml');
-    res.send(twiml.toString());
+        gather.play(firstTtsUrl);
+        res.type('text/xml');
+        res.send(twiml.toString());
+    } catch (error) {
+        console.error('Error in /voice route:', error);
+        res.status(500).send('Internal Server Error');
+    }
 });
 
 // Handle the gather completion
@@ -86,32 +87,36 @@ app.post('/handle-gather-complete', async (req, res) => {
     if (!userMessage) {
         console.error('No speech input provided');
         const twimlResponse = new VoiceResponse();
-        twimlResponse.say('Sorry, I did not get that. Please try again.');
-        const gather = twimlResponse.gather({
-            input: 'speech',
-            action: '/handle-gather-complete',
-            speechTimeout: 'auto',
-            speechModel: 'phone_call',
-            language: 'uz-UZ'
-        });
-        gather.say('Please say something and I will assist you.');
-        res.type('text/xml');
-        res.send(twimlResponse.toString());
+        try {
+            const errorTtsUrl = await ttsResponse("Uzur, nimadur xato ketdi");
+            const gather = twimlResponse.gather({
+                input: 'speech',
+                action: '/handle-gather-complete',
+                speechTimeout: 'auto',
+                speechModel: 'phone_call',
+                language: 'uz-UZ'
+            });
+            gather.play(errorTtsUrl);
+            res.type('text/xml');
+            res.send(twimlResponse.toString());
+        } catch (error) {
+            console.error('Error in handling no speech input:', error);
+            res.status(500).send('Internal Server Error');
+        }
         return;
     }
 
     try {
-        const gptText = await getGPTResponse(userMessage);
-        const ttsResponseData = await ttsResponse(gptText);
+        // Fetch GPT response and TTS response in parallel
+        const [gptText, secondTtsUrl] = await Promise.all([
+            getGPTResponse(userMessage),
+            ttsResponse("Yana qanday yordam bera olaman")
+        ]);
 
-        // Log the entire ttsResponseData to debug
-        console.log('TTS Response Data:', ttsResponseData);
-
-        // Ensure the structure is correct
-        const audioUrl = ttsResponseData.data.result.url; // Adjust as necessary based on actual response
+        const ttsResponseUrl = await ttsResponse(gptText);
 
         const twimlResponse = new VoiceResponse();
-        twimlResponse.play(audioUrl);
+        twimlResponse.play(ttsResponseUrl);
 
         const gather = twimlResponse.gather({
             input: 'speech',
@@ -120,19 +125,23 @@ app.post('/handle-gather-complete', async (req, res) => {
             speechModel: 'phone_call',
             language: 'uz-UZ'
         });
-        gather.say('Please say something and I will assist you.');
+        gather.play(secondTtsUrl);
 
         res.type('text/xml');
         res.send(twimlResponse.toString());
     } catch (error) {
         console.error('Error handling the gather completion:', error);
         const twimlResponse = new VoiceResponse();
-        twimlResponse.say('Sorry, something went wrong. Please try again later.');
+        try {
+            const catchTtsUrl = await ttsResponse("Xatolik yuz berdi. Iltimos qayta urunib ko'ring");
+            twimlResponse.play(catchTtsUrl);
+        } catch (ttsError) {
+            console.error('Error generating TTS for error message:', ttsError);
+        }
         res.type('text/xml');
         res.send(twimlResponse.toString());
     }
 });
-
 
 // Start the server
 app.listen(port, () => {
