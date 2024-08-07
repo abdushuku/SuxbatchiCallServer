@@ -143,6 +143,33 @@ app.post('/handle-gather-complete', async (req, res) => {
     }
 });
 
+app.post('/call-status', async (req, res) => {
+    const callSid = req.body.CallSid;
+    const callStatus = req.body.CallStatus;
+
+    if (callStatus === 'completed') {
+        try {
+            // Fetch the call record from Twilio's API
+            const response = await axios.get(`https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Calls/${callSid}.json`, {
+                auth: {
+                    username: process.env.AUTH_SID,
+                    password: process.env.AUTH_TOKEN
+                }
+            });
+
+            // Handle the call record (e.g., store it, process it, etc.)
+            console.log('Call Record:', response.data);
+
+            res.status(200).send('Call record fetched successfully');
+        } catch (error) {
+            console.error('Error fetching call record:', error);
+            res.status(500).send('Error fetching call record');
+        }
+    } else {
+        res.status(200).send('Call not completed yet');
+    }
+});
+
 // Start the server
 app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
