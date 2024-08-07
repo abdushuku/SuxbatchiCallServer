@@ -23,7 +23,7 @@ async function getGPTResponse(userMessage) {
             { role: "system", content: "You are a helpful assistant." },
             { role: "user", content: userMessage }
         ],
-        model: "gpt-4"
+        model: "gpt-4o-mini-2024-07-18"
     });
 
     return completion.choices[0].message.content;
