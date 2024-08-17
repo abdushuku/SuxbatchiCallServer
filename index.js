@@ -3,24 +3,33 @@ import bodyParser from 'body-parser';
 import axios from 'axios';
 import twilio from 'twilio';
 import dotenv from 'dotenv';
+import session from 'express-session';
+import cors from 'cors';
 import cookieParser from 'cookie-parser';
 dotenv.config();
 import db from './models/database.js'
+
+import { fetchHeaderValue } from './get.Cookie.js'
 import OpenAi from 'openai';
-const openai = new OpenAi({ apiKey: process.env.OPENAI_API_KEY});
+const openai = new OpenAi({ apiKey: process.env.OPENAI_API_KEY });
 
 const { VoiceResponse } = twilio.twiml;
 const app = express();
 const port = process.env.PORT || 3004;
 
 app.use(cookieParser());
+app.use(cors({
+    origin: 'http://localhost:5000',
+    credentials: true,
+}))
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.use(express.json())
 app.set('trust proxy', 1); // Trust first proxy
 
-async function getCompanyInfo(user_phonenumber){
-    await db.query('SELECT * FROM model WHERE user_phonenumber = $1', [user_phonenumber]);
+async function getCompanyInfo(user_phonenumber) {
+    const data = await db.query('SELECT * FROM model WHERE phone_number = $1', [user_phonenumber]);
+    return data;
 }
 
 function ttsConfig(gptText) {
@@ -82,26 +91,60 @@ async function getGPTResponse(userMessage, system_promp) {
 }
 
 
+app.get('/', (req, res) => {
+    fetchHeaderValue()
+        .then(async (user_phonenumber) => {
+            // Query the database using the fetched phone number
+            const data = await db.query('SELECT * FROM model WHERE phone_number = $1', [user_phonenumber]);
+
+            // Send the data back to the client
+            res.send(data.rows);
+        })
+        .catch((error) => {
+            console.error('Error fetching header value:', error);
+            res.status(500).send('Internal Server Error');
+        });
+});
+
+
+
+
 app.post('/models', async (req, res) => {
-    const {first_word, system_promp, user_phonenumber} = req.body;
-    const data = {first_word, system_promp, user_phonenumber};
+    const { first_word, system_promp, phone_number } = req.body;
+
+    const data = { first_word, system_promp, phone_number };
     console.log(data);
     try {
-        await db.query('INSERT INTO model (first_word, system_promp, user_phonenumber) VALUES ($1, $2, $3)', [first_word, system_promp, user_phonenumber]);
-        res.cookie("phone_number", user_phonenumber, { httpOnly: true, secure: true, maxAge: 3600000 });
+        // Insert the data into the database
+        await db.query('INSERT INTO model (first_word, system_promp, phone_number) VALUES ($1, $2, $3)', [first_word, system_promp, phone_number]);
+        res.cookie('user_phonenumber', phone_number, { maxAge: 500000, httpOnly: true });
+
+        console.log("Cookie set successfully");
         return res.status(200).json({ message: 'Data inserted and cookie set successfully' });
     } catch (error) {
-        console.log(error);
-        
+        console.error('Error during database insertion:', error);
+        return res.status(500).json({ message: 'Internal Server Error' });
     }
 });
 
+
+
 app.post('/voice', async (req, res) => {
     const twiml = new VoiceResponse();
-    const {phone_number} = req.cookies;
-    const data = await getCompanyInfo(phone_number);
+    console.log('Cookies:', req.cookies);
     try {
-        const twilioPlayUrl = await ttsResponse(data.first_word); // Assuming first_word is the correct key
+        const user_phonenumber = await fetchHeaderValue();
+        console.log('User phone number:', user_phonenumber);
+        if (!user_phonenumber) {
+            console.error('User phone number cookie not found');
+            return res.status(400).send('User phone number not found in cookies');
+        }
+        // Update the query to use the correct column name
+        const data = await db.query('SELECT * FROM model WHERE phone_number = $1', [user_phonenumber]);
+        console.log('Company Info:', data.rows[0]);
+
+        const first_word = data.rows[0].first_word;
+        const twilioPlayUrl = await ttsResponse(first_word);
         const firstTtsUrl = await ttsResponse('Yordam berishdan mamnunmiz!');
 
         twiml.play(twilioPlayUrl);
@@ -117,16 +160,19 @@ app.post('/voice', async (req, res) => {
         res.type('text/xml');
         res.send(twiml.toString());
     } catch (error) {
-        console.error('Error in /voice route:', error.message);
+        console.error('Error in /voice route:', error);
         res.status(500).send('Internal Server Error');
     }
 });
 
 
+
+
+
 // Handle the gather completion
 app.post('/handle-gather-complete', async (req, res) => {
     const userMessage = req.body.SpeechResult;
-    const {phone_number} = req.cookies;
+
     if (!userMessage) {
         console.error('No speech input provided');
         const twimlResponse = new VoiceResponse();
@@ -148,15 +194,26 @@ app.post('/handle-gather-complete', async (req, res) => {
         }
         return;
     }
-    const data = getCompanyInfo(phone_number);
+
+
+
     try {
-        // Fetch GPT response and TTS response in parallel
+        const user_phonenumber = await fetchHeaderValue();
+        const data = await db.query('SELECT * FROM model WHERE phone_number = $1', [user_phonenumber]);
+        console.log(data.rows[0].system_promp);
         const [gptText, secondTtsUrl] = await Promise.all([
-            getGPTResponse(userMessage, data.system_promp),
+            getGPTResponse(userMessage, data.rows[0].system_promp),
             ttsResponse("Yana qanday yordam bera olaman")
         ]);
 
+        if (!gptText || !secondTtsUrl) {
+            throw new Error('Invalid GPT response or TTS URL');
+        }
+
         const ttsResponseUrl = await ttsResponse(gptText);
+        if (!ttsResponseUrl) {
+            throw new Error('Invalid TTS response URL');
+        }
 
         const twimlResponse = new VoiceResponse();
         twimlResponse.play(ttsResponseUrl);
@@ -172,12 +229,14 @@ app.post('/handle-gather-complete', async (req, res) => {
 
         res.type('text/xml');
         res.send(twimlResponse.toString());
-        res.clearCookie('phone_number');
     } catch (error) {
         console.error('Error handling the gather completion:', error);
         const twimlResponse = new VoiceResponse();
         try {
             const catchTtsUrl = await ttsResponse("Xatolik yuz berdi. Iltimos qayta urunib ko'ring");
+            if (!catchTtsUrl) {
+                throw new Error('Failed to generate error TTS URL');
+            }
             twimlResponse.play(catchTtsUrl);
         } catch (ttsError) {
             console.error('Error generating TTS for error message:', ttsError);
