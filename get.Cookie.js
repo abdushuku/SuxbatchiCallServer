@@ -1,14 +1,13 @@
-const { promises: fs } = require('fs');
-const { fileURLToPath } = require('url');
-const { dirname, join } = require('path');
+import { promises as fs } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
-// Get the __filename and __dirname in CommonJS
-const __filename = fileURLToPath(require('url').pathToFileURL(__filename));
+const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const JSON_FILE_PATH = join(__dirname, 'temp.json');
 
-async function fetchPhoneNumber(userId) {
+export async function fetchPhoneNumber(userId) {
     try {
         const response = await fetch('http://localhost:5000', {
             method: 'GET',
@@ -42,7 +41,7 @@ async function saveToJson(data) {
     }
 }
 
-async function getFromJson() {
+export async function getFromJson() {
     try {
         const data = await fs.readFile(JSON_FILE_PATH, 'utf8');
         return JSON.parse(data);
@@ -56,5 +55,3 @@ async function getFromJson() {
     }
 }
 
-// Export the functions using module.exports
-module.exports = { fetchPhoneNumber, getFromJson };

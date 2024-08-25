@@ -1,41 +1,34 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const axios = require('axios');
-const twilio = require('twilio');
-const dotenv = require('dotenv');
-// const csrf = require('csurf');
-const cors = require('cors');
-const cookieParser = require('cookie-parser');
-const db = require('./models/database.js');
-
-const { fetchPhoneNumber, getFromJson } =require( './get.Cookie.js')
-// const { csruf} = require('./csrf.js')
-const OpenAi = require('openai');
-
+import express from 'express';
+import bodyParser from 'body-parser';
+import axios from 'axios';
+import twilio from 'twilio';
+import dotenv from 'dotenv';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
 dotenv.config();
+import db from './models/database.js'
+
+import { fetchPhoneNumber, getFromJson } from './get.Cookie.js'
+import OpenAi from 'openai';
 const openai = new OpenAi({ apiKey: process.env.OPENAI_API_KEY });
 
 const { VoiceResponse } = twilio.twiml;
 const app = express();
 const port = process.env.PORT || 3004;
 
+
 app.use(cookieParser());
 app.use(cors({
-    origin: ['http://localhost:5000'],
-    methods: ['GET', 'POST'],
+    origin: 'http://localhost:5000',
     credentials: true,
+    optionsSuccessStatus: 200
 }))
-app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 app.use(express.json())
-// const csrfProtection = csrf({ cookie: true });
-// app.use(csrfProtection);
 app.set('trust proxy', 1); // Trust first proxy
 
-async function getCompanyInfo(user_phonenumber) {
-    const data = await db.query('SELECT * FROM model WHERE phone_number = $1', [user_phonenumber]);
-    return data;
-}
+
 
 function ttsConfig(gptText) {
     return {
@@ -97,28 +90,45 @@ async function getGPTResponse(userMessage, system_promp) {
 
 
 app.get('/', (req, res) => {
-
-    const user_phonenumber = req.cookies.user_phonenumber
-    res.json({ user_phonenumber });
+    const data = getFromJson();
 });
 
 
 
 app.post('/models', async (req, res) => {
-    const {first_word, system_promp, phone_number, twilio_id, userId} = req.body;
-    console.log({first_word, system_promp, phone_number, twilio_id});
-    const dataInfo=[first_word, system_promp, phone_number, twilio_id]
+    const { first_word, system_promp, phone_number, twilio_id, userId } = req.body;
+    console.log({ first_word, system_promp, phone_number, twilio_id });
+
+    const dataInfo = [twilio_id, first_word, system_promp, phone_number];
+
     try {
-        await fetchPhoneNumber(userId)
-        const phone_number = await getFromJson();
-        const  data = await db.query('INSERT INTO model (first_word, system_promp, phone_number, twilio_id) VALUES ($1, $2, $3, $4)', dataInfo);
-        res.cookie('user_phonenumber', phone_number, { maxAge: 500000, httpOnly: true, sameSite: 'none', secure:false });
-        res.status(200).send({ message: 'Success', data:{data} });
+        // Insert data into the database and return the inserted row
+        const { rows } = await db.query(
+            'INSERT INTO model (twilio_id, first_word, system_promp, phone_number) VALUES ($1, $2, $3, $4) RETURNING *',
+            dataInfo
+        );
+
+        // Set a cookie with the user's phone number
+        res.cookie('user_phonenumber', phone_number, {
+            maxAge: 500000,
+            httpOnly: true,
+            sameSite: 'none',
+            secure: false,
+        });
+
+        // Respond with the inserted data
+        res.status(200).send({ message: 'Success', data: rows[0] });
+
+        // Fetch phone number using fetchPhoneNumber function
+        await fetchPhoneNumber(userId);
+        const fetchedPhoneNumber = await getFromJson();
+        console.log('Fetched phone number:', fetchedPhoneNumber);
     } catch (error) {
         console.error('Error processing request:', error);
         res.status(500).send({ message: 'Internal Server Error' });
     }
 });
+
 
 
 
