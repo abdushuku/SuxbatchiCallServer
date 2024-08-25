@@ -8,7 +8,7 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const db = require('./models/database.js');
 
-const { getCookie } = require('./get.Cookie.js');
+const { fetchPhoneNumber, getFromJson } =require( './get.Cookie.js')
 // const { csruf} = require('./csrf.js')
 const OpenAi = require('openai');
 
@@ -97,18 +97,6 @@ async function getGPTResponse(userMessage, system_promp) {
 
 
 app.get('/', (req, res) => {
-    // fetchHeaderValue()
-    //     .then(async (user_phonenumber) => {
-    //         // Query the database using the fetched phone number
-    //         const data = await db.query('SELECT * FROM model WHERE phone_number = $1', [user_phonenumber]);
-
-    //         // Send the data back to the client
-    //         res.send(data.rows);
-    //     })
-    //     .catch((error) => {
-    //         console.error('Error fetching header value:', error);
-    //         res.status(500).send('Internal Server Error');
-    //     });
 
     const user_phonenumber = req.cookies.user_phonenumber
     res.json({ user_phonenumber });
@@ -116,34 +104,13 @@ app.get('/', (req, res) => {
 
 
 
-
-// app.post('/models', async (req, res) => {
-//     const { first_word, system_promp, phone_number, twilio_id } = req.body;
-
-//     console.log({ first_word, system_promp, phone_number, twilio_id });
-
-//     try {
-//         // Optionally, fetch additional cookie data before inserting into the database
-//         // const updatedPhoneNumber = await getCookie(phone_number) || phone_number;
-//         await db.query('INSERT INTO model (first_word, system_promp, phone_number, twilio_id) VALUES ($1, $2, $3, $4)', 
-//                        [first_word, system_promp, phone_number, twilio_id]);
-
-//         // Set the cookie with the updated phone number (or the original if no update)
-//         res.cookie('user_phonenumber', phone_number, { maxAge: 500000, httpOnly: true, sameSite: 'none', secure:false });
-
-//         console.log("Cookie set successfully");
-//         res.status(200).json({ message: 'Data inserted and cookie set successfully' });
-//     } catch (error) {
-//         console.error('Error during database insertion:', error);
-//         res.status(500).json({ message: 'Internal Server Error' });
-//     }
-// });
-
 app.post('/models', async (req, res) => {
-    const {first_word, system_promp, phone_number, twilio_id} = req.body;
+    const {first_word, system_promp, phone_number, twilio_id, userId} = req.body;
     console.log({first_word, system_promp, phone_number, twilio_id});
     const dataInfo=[first_word, system_promp, phone_number, twilio_id]
     try {
+        await fetchPhoneNumber(userId)
+        const phone_number = await getFromJson();
         const  data = await db.query('INSERT INTO model (first_word, system_promp, phone_number, twilio_id) VALUES ($1, $2, $3, $4)', dataInfo);
         res.cookie('user_phonenumber', phone_number, { maxAge: 500000, httpOnly: true, sameSite: 'none', secure:false });
         res.status(200).send({ message: 'Success', data:{data} });
@@ -159,16 +126,16 @@ app.post('/models', async (req, res) => {
 app.post('/voice', async (req, res) => {
     const twiml = new VoiceResponse();
     console.log('Cookies:', req.cookies);
-    const {user_phonenumber} = req.body
     try {
-        const phone_number = await getCookie(user_phonenumber);
-        console.log('User phone number:', phone_number);
-        if (!phone_number) {
+        const user_phonenumber = await getFromJson();
+        const phoneNumber = +user_phonenumber.phoneNumber;
+        console.log('User phone number:', user_phonenumber);
+        if (!user_phonenumber) {
             console.error('User phone number cookie not found');
             return res.status(400).send('User phone number not found in cookies');
         }
         // Update the query to use the correct column name
-        const data = await db.query('SELECT * FROM model WHERE phone_number = $1', [phone_number]);
+        const data = await db.query('SELECT * FROM model WHERE phone_number = $1', [phoneNumber]);
         console.log('Company Info:', data.rows[0]);
 
         const first_word = data.rows[0].first_word;
@@ -192,6 +159,8 @@ app.post('/voice', async (req, res) => {
         res.status(500).send('Internal Server Error');
     }
 });
+
+
 
 
 
@@ -226,7 +195,7 @@ app.post('/handle-gather-complete', async (req, res) => {
 
 
     try {
-        const user_phonenumber = await getCookie();
+        const user_phonenumber = await getFromJson();
         const data = await db.query('SELECT * FROM model WHERE phone_number = $1', [user_phonenumber]);
         console.log(data.rows[0].system_promp);
         const [gptText, secondTtsUrl] = await Promise.all([
@@ -273,6 +242,7 @@ app.post('/handle-gather-complete', async (req, res) => {
         res.send(twimlResponse.toString());
     }
 });
+
 
 
 // Start the server
