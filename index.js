@@ -3,13 +3,12 @@ import bodyParser from 'body-parser';
 import axios from 'axios';
 import twilio from 'twilio';
 import dotenv from 'dotenv';
-import session from 'express-session';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 dotenv.config();
 import db from './models/database.js'
 
-import { fetchHeaderValue } from './get.Cookie.js'
+import { fetchPhoneNumber, getFromJson } from './get.Cookie.js'
 import OpenAi from 'openai';
 const openai = new OpenAi({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -17,12 +16,14 @@ const { VoiceResponse } = twilio.twiml;
 const app = express();
 const port = process.env.PORT || 3004;
 
+
 app.use(cookieParser());
 app.use(cors({
     origin: 'http://localhost:5000',
     credentials: true,
+    optionsSuccessStatus: 200
 }))
-app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 app.use(express.json())
 app.set('trust proxy', 1); // Trust first proxy
@@ -90,35 +91,31 @@ async function getGPTResponse(userMessage, system_promp) {
     return gptResponse;
 }
 
-
-app.get('/', (req, res) => {
-    fetchHeaderValue()
-        .then(async (user_phonenumber) => {
-            // Query the database using the fetched phone number
-            const data = await db.query('SELECT * FROM model WHERE phone_number = $1', [user_phonenumber]);
-
-            // Send the data back to the client
-            res.send(data.rows);
-        })
-        .catch((error) => {
-            console.error('Error fetching header value:', error);
-            res.status(500).send('Internal Server Error');
-        });
+app.get('/',  async (req, res) => {
+    const data = await getFromJson();
+    try {
+        const {rows} = await db.query('SELECT * FROM model WHERE phone_number = $1', [data.phoneNumber]);
+        res.json(rows);
+    } catch (error) {
+        console.log(error);
+    }
 });
 
 
 
 
 app.post('/models', async (req, res) => {
-    const { first_word, system_promp, phone_number } = req.body;
-
-    const data = { first_word, system_promp, phone_number };
+    const { first_word, system_promp, phone_number, userId } = req.body;
+    const data = { first_word, system_promp, phone_number, userId };
     console.log(data);
-    try {
-        // Insert the data into the database
-        await db.query('INSERT INTO model (first_word, system_promp, phone_number) VALUES ($1, $2, $3)', [first_word, system_promp, phone_number]);
-        res.cookie('user_phonenumber', phone_number, { maxAge: 500000, httpOnly: true });
 
+    try {
+        await fetchPhoneNumber(userId)
+        const phone_number = await getFromJson();
+        await db.query(
+            'INSERT INTO model (first_word, system_promp, phone_number) VALUES ($1, $2, $3)',
+            [first_word, system_promp, phone_number]
+        );
         console.log("Cookie set successfully");
         return res.status(200).json({ message: 'Data inserted and cookie set successfully' });
     } catch (error) {
@@ -133,14 +130,15 @@ app.post('/voice', async (req, res) => {
     const twiml = new VoiceResponse();
     console.log('Cookies:', req.cookies);
     try {
-        const user_phonenumber = await fetchHeaderValue();
+        const user_phonenumber = await getFromJson();
+        const phoneNumber = +user_phonenumber.phoneNumber;
         console.log('User phone number:', user_phonenumber);
         if (!user_phonenumber) {
             console.error('User phone number cookie not found');
             return res.status(400).send('User phone number not found in cookies');
         }
         // Update the query to use the correct column name
-        const data = await db.query('SELECT * FROM model WHERE phone_number = $1', [user_phonenumber]);
+        const data = await db.query('SELECT * FROM model WHERE phone_number = $1', [phoneNumber]);
         console.log('Company Info:', data.rows[0]);
 
         const first_word = data.rows[0].first_word;
@@ -164,6 +162,8 @@ app.post('/voice', async (req, res) => {
         res.status(500).send('Internal Server Error');
     }
 });
+
+
 
 
 
@@ -198,7 +198,7 @@ app.post('/handle-gather-complete', async (req, res) => {
 
 
     try {
-        const user_phonenumber = await fetchHeaderValue();
+        const user_phonenumber = await getFromJson();
         const data = await db.query('SELECT * FROM model WHERE phone_number = $1', [user_phonenumber]);
         console.log(data.rows[0].system_promp);
         const [gptText, secondTtsUrl] = await Promise.all([
